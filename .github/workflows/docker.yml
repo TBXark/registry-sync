@@ -2,7 +2,7 @@ name: Build and Publish Docker Image
 permissions:
   packages: write
   contents: read
-  
+
 on:
   push:
     branches: [ master ]
@@ -32,4 +32,4 @@ jobs:
           password: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Build and push
-        run: make buildCrossImage
+        run: make buildImage
