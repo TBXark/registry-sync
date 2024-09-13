@@ -141,9 +141,10 @@ func main() {
 		}
 		log.Printf("sleep %d seconds", config.Duration)
 		time.Sleep(time.Duration(config.Duration) * time.Second)
-		config, err = loadConfig(*cfg)
-		if err != nil {
-			log.Printf("reload config failed: %v", err)
+		conf, e := loadConfig(*cfg)
+		if e != nil {
+			log.Printf("reload config failed: %v", e)
 		}
+		config = conf
 	}
 }
