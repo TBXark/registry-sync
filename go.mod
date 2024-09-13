@@ -1,4 +1,4 @@
-module registry-sync
+module github.com/TBXark/registry-sync
 
 go 1.23.0
 
