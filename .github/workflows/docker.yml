@@ -1,7 +1,4 @@
 name: Build and Publish Docker Image
-permissions:
-  packages: write
-  contents: read
 
 on:
   push:
@@ -13,6 +10,9 @@ on:
 
 jobs:
   build-and-push:
+    permissions:
+        packages: write
+        contents: read
     runs-on: ubuntu-latest
     steps:
       - name: Checkout code
