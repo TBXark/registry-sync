@@ -18,8 +18,6 @@ jobs:
           docker_registry: ghcr.io
           docker_username: ${{ github.actor }}
           docker_password:  ${{ secrets.GITHUB_TOKEN }}
-          docker_push_webhook: ${{ secrets.DOCKER_PUSH_WEBHOOK }}
           backup_registry: ${{ secrets.BACKUP_REGISTRY }}
           backup_username: ${{ secrets.BACKUP_USERNAME }}
           backup_password: ${{ secrets.BACKUP_PASSWORD }}
-          backup_push_webhook: ${{ secrets.BACKUP_PUSH_WEBHOOK }}

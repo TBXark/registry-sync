@@ -6,15 +6,15 @@ import (
 	"encoding/json"
 	"flag"
 	"fmt"
+	"github.com/docker/docker/api/types/image"
+	"github.com/docker/docker/client"
 	"io"
 	"log"
 	"net/http"
 	"os"
 	"strings"
+	"sync"
 	"time"
-
-	"github.com/docker/docker/api/types/image"
-	"github.com/docker/docker/client"
 )
 
 var BuildVersion = "dev"
@@ -24,47 +24,49 @@ type RegistryAuth struct {
 	Password string `json:"password"`
 }
 
+type Image struct {
+	Source string `json:"source"`
+	Target string `json:"target"`
+}
+
 type Config struct {
-	Images []struct {
-		Source string `json:"source"`
-		Target string `json:"target"`
-	} `json:"images"`
-	Duration int `json:"duration"`
-	Auth     *struct {
+	Images []Image `json:"images"`
+	Auth   *struct {
 		Pull RegistryAuth `json:"pull"`
 		Push RegistryAuth `json:"push"`
 	} `json:"auth"`
+	Duration     int  `json:"duration"`
+	DisablePrune bool `json:"disable_prune"`
 }
 
 func loadConfig(path string) (*Config, error) {
+	var body []byte
+	var err error
+
 	if strings.HasPrefix(path, "http") {
 		resp, err := http.Get(path)
 		if err != nil {
-			return nil, err
+			return nil, fmt.Errorf("failed to fetch config: %w", err)
 		}
 		defer resp.Body.Close()
-		config := &Config{}
-		err = json.NewDecoder(resp.Body).Decode(config)
-		if err != nil {
-			return nil, err
-		}
-		return config, nil
+		body, err = io.ReadAll(resp.Body)
 	} else {
-		bytes, err := os.ReadFile(path)
-		if err != nil {
-			log.Fatal(err)
-		}
-		config := &Config{}
-		err = json.Unmarshal(bytes, config)
-		if err != nil {
-			return nil, err
-		}
-		return config, nil
+		body, err = os.ReadFile(path)
 	}
+
+	if err != nil {
+		return nil, fmt.Errorf("failed to read config: %w", err)
+	}
+
+	config := &Config{}
+	if err := json.Unmarshal(body, config); err != nil {
+		return nil, fmt.Errorf("failed to parse config: %w", err)
+	}
+
+	return config, nil
 }
 
 func main() {
-
 	cfg := flag.String("config", "config.json", "config file")
 	help := flag.Bool("help", false, "show help")
 	flag.Parse()
@@ -83,10 +85,9 @@ func main() {
 	cli, err := client.NewClientWithOpts(
 		client.FromEnv,
 		client.WithAPIVersionNegotiation(),
-		client.WithHost("unix:///var/run/docker.sock"),
 	)
 	if err != nil {
-		panic(err)
+		log.Fatalf("Failed to create Docker client: %v", err)
 	}
 	defer cli.Close()
 
@@ -98,60 +99,110 @@ func main() {
 	}
 
 	if config.Auth != nil {
-		if pullAuth, err := json.Marshal(config.Auth.Pull); err == nil {
+		if pullAuth, e := json.Marshal(config.Auth.Pull); e == nil {
 			pull.RegistryAuth = base64.StdEncoding.EncodeToString(pullAuth)
 		}
-		if pushAuth, err := json.Marshal(config.Auth.Push); err == nil {
+		if pushAuth, e := json.Marshal(config.Auth.Push); e == nil {
 			push.RegistryAuth = base64.StdEncoding.EncodeToString(pushAuth)
 		}
 	}
-	readAllToDiscard := func(r io.ReadCloser) error {
-		defer r.Close()
-		_, e := io.Copy(io.Discard, r)
-		return e
-	}
 
 	for {
-		for _, img := range config.Images {
-			log.Printf("start to process image %s", img.Source)
+		processImages(cli, config, &pull, &push)
 
-			// Pull image
-			reader, e := cli.ImagePull(context.Background(), img.Source, pull)
-			if e != nil {
-				log.Printf("pull image %s failed: %v", img.Source, e)
-				continue
+		if !config.DisablePrune {
+			if e := pruneUnusedImages(cli); e != nil {
+				log.Printf("Error pruning unused images: %v", e)
 			}
-			if re := readAllToDiscard(reader); re != nil {
-				log.Printf("error while pulling image %s: %v", img.Source, e)
-				continue
-			}
-			log.Printf("pull image %s success", img.Source)
-
-			// Tag image
-			if e = cli.ImageTag(context.Background(), img.Source, img.Target); e != nil {
-				log.Printf("tag image %s to %s failed: %v", img.Source, img.Target, e)
-				continue
-			}
-			log.Printf("tag image %s to %s success", img.Source, img.Target)
-
-			// Push image
-			reader, e = cli.ImagePush(context.Background(), img.Target, push)
-			if e != nil {
-				log.Printf("push image %s failed: %v", img.Target, e)
-				continue
-			}
-			if re := readAllToDiscard(reader); re != nil {
-				log.Printf("error while pushing image %s: %v", img.Target, e)
-				continue
-			}
-			log.Printf("push image %s success", img.Target)
 		}
-		log.Printf("sleep %d seconds", config.Duration)
+
+		if newConfig, e := loadConfig(*cfg); e == nil {
+			config = newConfig
+		}
+
+		log.Printf("Sleeping for %d seconds", config.Duration)
 		time.Sleep(time.Duration(config.Duration) * time.Second)
-		conf, e := loadConfig(*cfg)
-		if e != nil {
-			log.Printf("reload config failed: %v", e)
-		}
-		config = conf
 	}
+}
+
+func processImages(cli *client.Client, config *Config, pull *image.PullOptions, push *image.PushOptions) {
+	var wg sync.WaitGroup
+	for _, img := range config.Images {
+		wg.Add(1)
+		go func(img Image) {
+			defer wg.Done()
+			if err := processImage(cli, &img, pull, push); err != nil {
+				log.Printf("Error processing image: %v", err)
+			}
+		}(img)
+	}
+	wg.Wait()
+}
+
+func readAllToDiscard(r io.ReadCloser) error {
+	defer r.Close()
+	_, e := io.Copy(io.Discard, r)
+	return e
+}
+
+func processImage(cli *client.Client, img *Image, pull *image.PullOptions, push *image.PushOptions) error {
+	log.Printf("start to process image %s", img.Source)
+
+	// Pull image
+	reader, e := cli.ImagePull(context.Background(), img.Source, *pull)
+	if e != nil {
+		return fmt.Errorf("pull image %s failed: %w", img.Source, e)
+	}
+	if re := readAllToDiscard(reader); re != nil {
+		return fmt.Errorf("error while pulling image %s: %w", img.Source, re)
+	}
+	log.Printf("pull image %s success", img.Source)
+
+	// Tag image
+	if e = cli.ImageTag(context.Background(), img.Source, img.Target); e != nil {
+		return fmt.Errorf("tag image %s to %s failed: %w", img.Source, img.Target, e)
+	}
+	log.Printf("tag image %s to %s success", img.Source, img.Target)
+
+	// Push image
+	reader, e = cli.ImagePush(context.Background(), img.Target, *push)
+	if e != nil {
+		return fmt.Errorf("push image %s failed: %w", img.Target, e)
+	}
+	if re := readAllToDiscard(reader); re != nil {
+		return fmt.Errorf("error while pushing image %s: %w", img.Target, re)
+	}
+	log.Printf("push image %s success", img.Target)
+
+	return nil
+}
+
+func pruneUnusedImages(cli *client.Client) error {
+	log.Println("Pruning unused and untagged images")
+
+	images, err := cli.ImageList(context.Background(), image.ListOptions{
+		All: true,
+	})
+	if err != nil {
+		return fmt.Errorf("failed to list images: %w", err)
+	}
+
+	var spaceReclaimed int64
+	var deletedCount int
+
+	for _, img := range images {
+		if len(img.RepoTags) == 0 && len(img.RepoDigests) == 0 {
+			_, e := cli.ImageRemove(context.Background(), img.ID, image.RemoveOptions{Force: false, PruneChildren: true})
+			if e != nil {
+				log.Printf("Failed to remove image %s: %v", img.ID, e)
+				continue
+			}
+			spaceReclaimed += img.Size
+			deletedCount++
+			log.Printf("Removed image: %s", img.ID)
+		}
+	}
+
+	log.Printf("Pruned %d images, reclaimed space: %d bytes", deletedCount, spaceReclaimed)
+	return nil
 }
