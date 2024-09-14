@@ -6,8 +6,6 @@ import (
 	"encoding/json"
 	"flag"
 	"fmt"
-	"github.com/docker/docker/api/types/image"
-	"github.com/docker/docker/client"
 	"io"
 	"log"
 	"net/http"
@@ -15,6 +13,9 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/docker/docker/api/types/image"
+	"github.com/docker/docker/client"
 )
 
 var BuildVersion = "dev"
@@ -191,8 +192,11 @@ func pruneUnusedImages(cli *client.Client) error {
 	var deletedCount int
 
 	for _, img := range images {
-		if len(img.RepoTags) == 0 && len(img.RepoDigests) == 0 {
-			_, e := cli.ImageRemove(context.Background(), img.ID, image.RemoveOptions{Force: false, PruneChildren: true})
+		if len(img.RepoTags) > 0 {
+			continue
+		}
+		if len(img.RepoTags) == 0 || (len(img.RepoTags) == 1 && strings.HasSuffix(img.RepoTags[0], ":<none>")) {
+			_, e := cli.ImageRemove(context.Background(), img.ID, image.RemoveOptions{Force: true, PruneChildren: true})
 			if e != nil {
 				log.Printf("Failed to remove image %s: %v", img.ID, e)
 				continue
