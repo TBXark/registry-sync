@@ -5,6 +5,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"flag"
+	"fmt"
 	"io"
 	"log"
 	"net/http"
@@ -15,6 +16,8 @@ import (
 	"github.com/docker/docker/api/types/image"
 	"github.com/docker/docker/client"
 )
+
+var BuildVersion = "dev"
 
 type RegistryAuth struct {
 	Username string `json:"username"`
@@ -27,7 +30,7 @@ type Config struct {
 		Target string `json:"target"`
 	} `json:"images"`
 	Duration int `json:"duration"`
-	Auth     struct {
+	Auth     *struct {
 		Pull RegistryAuth `json:"pull"`
 		Push RegistryAuth `json:"push"`
 	} `json:"auth"`
@@ -63,7 +66,14 @@ func loadConfig(path string) (*Config, error) {
 func main() {
 
 	cfg := flag.String("config", "config.json", "config file")
+	help := flag.Bool("help", false, "show help")
 	flag.Parse()
+
+	if *help {
+		fmt.Printf("Version: %s\n", BuildVersion)
+		flag.Usage()
+		return
+	}
 
 	config, err := loadConfig(*cfg)
 	if err != nil {
@@ -80,24 +90,21 @@ func main() {
 	}
 	defer cli.Close()
 
-	pullAuth, err := json.Marshal(config.Auth.Pull)
-	if err != nil {
-		log.Fatal("Failed to marshal pull auth:", err)
-	}
-	pushAuth, err := json.Marshal(config.Auth.Push)
-	if err != nil {
-		log.Fatal("Failed to marshal push auth:", err)
-	}
-
 	pull := image.PullOptions{
-		RegistryAuth: base64.StdEncoding.EncodeToString(pullAuth),
-		All:          true,
+		All: true,
 	}
 	push := image.PushOptions{
-		RegistryAuth: base64.StdEncoding.EncodeToString(pushAuth),
-		All:          true,
+		All: true,
 	}
 
+	if config.Auth != nil {
+		if pullAuth, err := json.Marshal(config.Auth.Pull); err == nil {
+			pull.RegistryAuth = base64.StdEncoding.EncodeToString(pullAuth)
+		}
+		if pushAuth, err := json.Marshal(config.Auth.Push); err == nil {
+			push.RegistryAuth = base64.StdEncoding.EncodeToString(pushAuth)
+		}
+	}
 	readAllToDiscard := func(r io.ReadCloser) error {
 		defer r.Close()
 		_, e := io.Copy(io.Discard, r)
