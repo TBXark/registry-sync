@@ -10,12 +10,13 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"regexp"
 	"strings"
-	"sync"
 	"time"
 
 	"github.com/docker/docker/api/types/image"
 	"github.com/docker/docker/client"
+	"golang.org/x/sync/errgroup"
 )
 
 var BuildVersion = "dev"
@@ -31,13 +32,10 @@ type Image struct {
 }
 
 type Config struct {
-	Images []Image `json:"images"`
-	Auth   *struct {
-		Pull RegistryAuth `json:"pull"`
-		Push RegistryAuth `json:"push"`
-	} `json:"auth"`
-	Duration     int  `json:"duration"`
-	DisablePrune bool `json:"disable_prune"`
+	Images       []Image                 `json:"images"`
+	Auths        map[string]RegistryAuth `json:"auths"`
+	Duration     int                     `json:"duration"`
+	DisablePrune bool                    `json:"disable_prune"`
 }
 
 func loadConfig(path string) (*Config, error) {
@@ -92,24 +90,10 @@ func main() {
 	}
 	defer cli.Close()
 
-	pull := image.PullOptions{
-		All: true,
-	}
-	push := image.PushOptions{
-		All: true,
-	}
-
-	if config.Auth != nil {
-		if pullAuth, e := json.Marshal(config.Auth.Pull); e == nil {
-			pull.RegistryAuth = base64.StdEncoding.EncodeToString(pullAuth)
-		}
-		if pushAuth, e := json.Marshal(config.Auth.Push); e == nil {
-			push.RegistryAuth = base64.StdEncoding.EncodeToString(pushAuth)
-		}
-	}
-
 	for {
-		processImages(cli, config, &pull, &push)
+		if e := processImages(cli, config); e != nil {
+			log.Printf("Error processing images: %v", e)
+		}
 
 		if !config.DisablePrune {
 			if e := pruneUnusedImages(cli); e != nil {
@@ -126,18 +110,35 @@ func main() {
 	}
 }
 
-func processImages(cli *client.Client, config *Config, pull *image.PullOptions, push *image.PushOptions) {
-	var wg sync.WaitGroup
+func processImages(cli *client.Client, config *Config) error {
+	g := new(errgroup.Group)
 	for _, img := range config.Images {
-		wg.Add(1)
-		go func(img Image) {
-			defer wg.Done()
-			if err := processImage(cli, &img, pull, push); err != nil {
-				log.Printf("Error processing image: %v", err)
+		img := img
+		g.Go(func() error {
+			pull := image.PullOptions{
+				All: true,
 			}
-		}(img)
+			push := image.PushOptions{
+				All: true,
+			}
+			if config.Auths != nil {
+				for registry, auth := range config.Auths {
+					if matched, _ := regexp.MatchString(registry, img.Source); matched {
+						if authJson, err := json.Marshal(auth); err == nil {
+							pull.RegistryAuth = base64.StdEncoding.EncodeToString(authJson)
+						}
+					}
+					if matched, _ := regexp.MatchString(registry, img.Target); matched {
+						if authJson, err := json.Marshal(auth); err == nil {
+							push.RegistryAuth = base64.StdEncoding.EncodeToString(authJson)
+						}
+					}
+				}
+			}
+			return processImage(cli, &img, &pull, &push)
+		})
 	}
-	wg.Wait()
+	return g.Wait()
 }
 
 func readAllToDiscard(r io.ReadCloser) error {
