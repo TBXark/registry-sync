@@ -198,7 +198,11 @@ func pruneUnusedImages(cli *client.Client) error {
 		if len(img.RepoTags) == 0 || (len(img.RepoTags) == 1 && strings.HasSuffix(img.RepoTags[0], ":<none>")) {
 			_, e := cli.ImageRemove(context.Background(), img.ID, image.RemoveOptions{Force: true, PruneChildren: true})
 			if e != nil {
-				log.Printf("Failed to remove image %s: %v", img.ID, e)
+				imageName := "<unnamed>"
+				if len(img.RepoTags) > 0 {
+					imageName = img.RepoTags[0]
+				}
+				log.Printf("Failed to remove image %s (ID: %s): %v", imageName, img.ID, e)
 				continue
 			}
 			spaceReclaimed += img.Size
