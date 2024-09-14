@@ -10,7 +10,7 @@ import (
 	"log"
 	"net/http"
 	"os"
-	"regexp"
+	"path"
 	"strings"
 	"time"
 
@@ -24,15 +24,24 @@ var BuildVersion = "dev"
 type RegistryAuth struct {
 	Username string `json:"username"`
 	Password string `json:"password"`
+	Auth     string
 }
 
-type Image struct {
+type RegistryBase64Auth struct {
+	Auth string `json:"auth"`
+}
+
+type ImageConfig struct {
 	Source string `json:"source"`
 	Target string `json:"target"`
 }
 
+type DockerConfig struct {
+	Auths map[string]RegistryBase64Auth `json:"auths"`
+}
+
 type Config struct {
-	Images       []Image                 `json:"images"`
+	Images       []ImageConfig           `json:"images"`
 	Auths        map[string]RegistryAuth `json:"auths"`
 	Duration     int                     `json:"duration"`
 	DisablePrune bool                    `json:"disable_prune"`
@@ -43,9 +52,9 @@ func loadConfig(path string) (*Config, error) {
 	var err error
 
 	if strings.HasPrefix(path, "http") {
-		resp, err := http.Get(path)
-		if err != nil {
-			return nil, fmt.Errorf("failed to fetch config: %w", err)
+		resp, httpErr := http.Get(path)
+		if httpErr != nil {
+			return nil, fmt.Errorf("failed to fetch config: %w", httpErr)
 		}
 		defer resp.Body.Close()
 		body, err = io.ReadAll(resp.Body)
@@ -58,11 +67,50 @@ func loadConfig(path string) (*Config, error) {
 	}
 
 	config := &Config{}
-	if err := json.Unmarshal(body, config); err != nil {
-		return nil, fmt.Errorf("failed to parse config: %w", err)
+	if e := json.Unmarshal(body, config); e != nil {
+		return nil, fmt.Errorf("failed to parse config: %w", e)
+	}
+
+	if config.Auths == nil {
+		for _, auth := range config.Auths {
+			auth.Auth = base64.StdEncoding.EncodeToString([]byte(fmt.Sprintf("%s:%s", auth.Username, auth.Password)))
+		}
+	} else {
+		config.Auths = loadDefaultAuth()
 	}
 
 	return config, nil
+}
+
+func loadDefaultAuth() map[string]RegistryAuth {
+
+	auths := make(map[string]RegistryAuth)
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return auths
+	}
+
+	conf := path.Join(home, ".docker", "config.json")
+	if _, e := os.Stat(conf); e != nil {
+		return auths
+	}
+
+	data, err := os.ReadFile(conf)
+	if err != nil {
+		return auths
+	}
+
+	var dockerConfig DockerConfig
+	if e := json.Unmarshal(data, &dockerConfig); e != nil {
+		return auths
+	}
+
+	for registry, auth := range dockerConfig.Auths {
+		auths[registry] = RegistryAuth{
+			Auth: auth.Auth,
+		}
+	}
+	return auths
 }
 
 func main() {
@@ -123,15 +171,11 @@ func processImages(cli *client.Client, config *Config) error {
 			}
 			if config.Auths != nil {
 				for registry, auth := range config.Auths {
-					if matched, _ := regexp.MatchString(registry, img.Source); matched {
-						if authJson, err := json.Marshal(auth); err == nil {
-							pull.RegistryAuth = base64.StdEncoding.EncodeToString(authJson)
-						}
+					if strings.HasPrefix(img.Source, registry) {
+						pull.RegistryAuth = auth.Auth
 					}
-					if matched, _ := regexp.MatchString(registry, img.Target); matched {
-						if authJson, err := json.Marshal(auth); err == nil {
-							push.RegistryAuth = base64.StdEncoding.EncodeToString(authJson)
-						}
+					if strings.HasPrefix(img.Target, registry) {
+						push.RegistryAuth = auth.Auth
 					}
 				}
 			}
@@ -147,7 +191,7 @@ func readAllToDiscard(r io.ReadCloser) error {
 	return e
 }
 
-func processImage(cli *client.Client, img *Image, pull *image.PullOptions, push *image.PushOptions) error {
+func processImage(cli *client.Client, img *ImageConfig, pull *image.PullOptions, push *image.PushOptions) error {
 	log.Printf("start to process image %s", img.Source)
 
 	// Pull image
