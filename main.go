@@ -71,7 +71,7 @@ func loadConfig(path string) (*Config, error) {
 		return nil, fmt.Errorf("failed to parse config: %w", e)
 	}
 
-	if config.Auths == nil {
+	if config.Auths != nil && len(config.Auths) > 0 {
 		for _, auth := range config.Auths {
 			auth.Auth = base64.StdEncoding.EncodeToString([]byte(fmt.Sprintf("%s:%s", auth.Username, auth.Password)))
 		}
