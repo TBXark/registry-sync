@@ -11,7 +11,6 @@ import (
 
 	"github.com/docker/docker/api/types/image"
 	"github.com/docker/docker/client"
-	"golang.org/x/sync/errgroup"
 )
 
 var BuildVersion = "dev"
@@ -62,30 +61,28 @@ func main() {
 }
 
 func processImages(cli *client.Client, config *Config) error {
-	g := new(errgroup.Group)
 	for _, img := range config.Images {
-		img := img
-		g.Go(func() error {
-			pull := image.PullOptions{
-				All: true,
-			}
-			push := image.PushOptions{
-				All: true,
-			}
-			if config.Auths != nil {
-				for registry, auth := range config.Auths {
-					if strings.HasPrefix(img.Source, registry) {
-						pull.RegistryAuth = auth.Auth
-					}
-					if strings.HasPrefix(img.Target, registry) {
-						push.RegistryAuth = auth.Auth
-					}
+		pull := image.PullOptions{
+			All: true,
+		}
+		push := image.PushOptions{
+			All: true,
+		}
+		if config.Auths != nil {
+			for registry, auth := range config.Auths {
+				if strings.HasPrefix(img.Source, registry) {
+					pull.RegistryAuth = auth.Auth
+				}
+				if strings.HasPrefix(img.Target, registry) {
+					push.RegistryAuth = auth.Auth
 				}
 			}
-			return processImage(cli, &img, &pull, &push)
-		})
+		}
+		if err := processImage(cli, &img, &pull, &push); err != nil {
+			return err
+		}
 	}
-	return g.Wait()
+	return nil
 }
 
 func readAllToDiscard(r io.ReadCloser) error {

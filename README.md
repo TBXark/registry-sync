@@ -26,14 +26,10 @@ docker run -v /var/run/docker.sock:/var/run/docker.sock --name registry-sync ghc
         }
     ],
     "duration": 3600,
-    "auth": {
-        "pull": {
-            "username": "pull-user",
-            "password": "pull-password"
-        },
-        "push": {
-            "username": "push-user",
-            "password": "push-password"
+    "auths": {
+        "ghcr.io": {
+          "username": "user",
+          "password": "password"
         }
     }
 }

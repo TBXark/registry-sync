@@ -1,8 +1,10 @@
 package main
 
 import (
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"github.com/docker/docker/api/types/registry"
 	"io"
 	"log"
 	"net/http"
@@ -12,7 +14,9 @@ import (
 )
 
 type RegistryAuth struct {
-	Auth string `json:"auth"`
+	Auth     string `json:"auth"`
+	Username string `json:"username"`
+	Password string `json:"password"`
 }
 
 type ImageConfig struct {
@@ -56,7 +60,29 @@ func loadConfig(path string) (*Config, error) {
 	}
 
 	if config.Auths == nil || len(config.Auths) == 0 {
+		log.Printf("No auths found in config, loading default auth")
 		config.Auths = loadDefaultAuth()
+	} else {
+		log.Printf("Found auths in config: %+v", config.Auths)
+		auths := make(map[string]RegistryAuth)
+		for i, auth := range config.Auths {
+			if auth.Auth == "" {
+				authConfig := registry.AuthConfig{
+					Username: auth.Username,
+					Password: auth.Password,
+				}
+				authStr, e := registry.EncodeAuthConfig(authConfig)
+				if e != nil {
+					log.Printf("Failed to encode auth for %s: %v", auth.Username, e)
+					continue
+				}
+				auths[i] = RegistryAuth{
+					Auth: authStr,
+				}
+				log.Printf("Encoded auth for %s", auth.Auth)
+			}
+		}
+		config.Auths = auths
 	}
 
 	return config, nil
@@ -64,31 +90,46 @@ func loadConfig(path string) (*Config, error) {
 
 func loadDefaultAuth() map[string]RegistryAuth {
 
-	auths := make(map[string]RegistryAuth)
 	home, err := os.UserHomeDir()
 	if err != nil {
-		return auths
+		return nil
 	}
 
 	conf := path.Join(home, ".docker", "config.json")
+	log.Printf("Looking for auth in %s", conf)
 	if _, e := os.Stat(conf); e != nil {
-		return auths
+		log.Printf("No auth found in %s", conf)
+		return nil
 	}
 
 	data, err := os.ReadFile(conf)
 	if err != nil {
-		return auths
+		log.Printf("Failed to read %s: %v", conf, err)
+		return nil
 	}
 
 	var dockerConfig DockerConfig
 	if e := json.Unmarshal(data, &dockerConfig); e != nil {
-		return auths
+		log.Printf("Failed to parse %s: %v", conf, e)
+		return nil
 	}
-
-	for registry, auth := range dockerConfig.Auths {
-		log.Printf("load auth for registry %s", registry)
-		auths[registry] = RegistryAuth{
-			Auth: auth.Auth,
+	auths := make(map[string]RegistryAuth)
+	for i, auth := range dockerConfig.Auths {
+		decodedAuth, e := base64.URLEncoding.DecodeString(auth.Auth)
+		if e != nil {
+			continue
+		}
+		credentials := strings.SplitN(string(decodedAuth), ":", 2)
+		authConfig := registry.AuthConfig{
+			Username: credentials[0],
+			Password: credentials[1],
+		}
+		authStr, e := registry.EncodeAuthConfig(authConfig)
+		if e != nil {
+			continue
+		}
+		auths[i] = RegistryAuth{
+			Auth: authStr,
 		}
 	}
 	return auths
