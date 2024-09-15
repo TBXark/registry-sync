@@ -30,6 +30,9 @@ docker run -v /var/run/docker.sock:/var/run/docker.sock --name registry-sync ghc
         "ghcr.io": {
           "username": "user",
           "password": "password"
+        },
+        "docker.io": {
+          "auth": "base64({\"username\":\"user\",\"password\":\"password\"})"
         }
     }
 }

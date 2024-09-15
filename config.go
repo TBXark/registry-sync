@@ -24,6 +24,11 @@ type ImageConfig struct {
 	Target string `json:"target"`
 }
 
+type ImageWebhook struct {
+	URL    string `json:"url"`
+	Method string `json:"method"`
+}
+
 type DockerConfig struct {
 	Auths map[string]RegistryAuth `json:"auths"`
 }
@@ -80,6 +85,8 @@ func loadConfig(path string) (*Config, error) {
 					Auth: authStr,
 				}
 				log.Printf("Encoded auth for %s", auth.Auth)
+			} else {
+				auths[i] = auth
 			}
 		}
 		config.Auths = auths
@@ -120,6 +127,9 @@ func loadDefaultAuth() map[string]RegistryAuth {
 			continue
 		}
 		credentials := strings.SplitN(string(decodedAuth), ":", 2)
+		if len(credentials) != 2 {
+			continue
+		}
 		authConfig := registry.AuthConfig{
 			Username: credentials[0],
 			Password: credentials[1],
